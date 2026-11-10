@@ -33,7 +33,7 @@ func (s *TransactionService) RunPoller(ctx context.Context, interval time.Durati
 		err := s.Poll(scanCtx)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			log.Error("payment scan failed", "error", err)
+			log.Error("payment scan failed", "error", err, "login_state", s.Gateway.LoginState().State)
 		}
 		select {
 		case <-ctx.Done():

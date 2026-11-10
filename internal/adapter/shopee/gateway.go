@@ -66,7 +66,7 @@ func (g *Gateway) load() (*sdk.Session, *sdk.MerchantCredential, *sdk.HTTPClient
 	client := sdk.NewHTTPClient(nil)
 	client.Jar().Restore(session.Cookies)
 	credential, err := sdk.ReadMerchantCredential(client.Jar())
-	if err != nil || credential.AccountID != session.AccountID || (credential.BusinessID != "" && credential.BusinessID != g.MerchantID) || (credential.ExpiresAt > 0 && credential.ExpiresAt <= time.Now().UnixMilli()) {
+	if err != nil || credential.AccountID != session.AccountID || (credential.ExpiresAt > 0 && credential.ExpiresAt <= time.Now().UnixMilli()) {
 		g.state.State = "session_expired_or_invalid"
 		g.state.Authenticated = false
 		return nil, nil, nil, domain.ErrSessionUnavailable

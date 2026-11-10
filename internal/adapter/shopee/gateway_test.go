@@ -41,7 +41,7 @@ func TestSessionHealthFeedAndReplacement(t *testing.T) {
 	}
 	writeSession := func(exp time.Time, token string) {
 		t.Helper()
-		payload, _ := json.Marshal(map[string]any{"token": token, "userid": "account", "businessId": "merchant", "exp": exp.Unix()})
+		payload, _ := json.Marshal(map[string]any{"token": token, "userid": "account", "businessId": "business-distinct-from-merchant", "exp": exp.Unix()})
 		jwt := "eyJhbGciOiJIUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 		session := sdk.Session{AccountID: "account", Merchant: sdk.MerchantSummary{ID: "merchant"}, StoreID: "store", Cookies: []sdk.Cookie{{Name: sdk.LiveTokenCookie, Value: jwt, Domain: "partner.shopee.co.id", Path: "/", Secure: true}}}
 		data, _ := json.Marshal(session)
