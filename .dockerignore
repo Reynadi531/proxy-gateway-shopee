@@ -1,0 +1,10 @@
+.git
+bin
+tmp
+.env
+.env.*
+!.env.example
+session.json
+qris.txt
+secrets
+coverage.out

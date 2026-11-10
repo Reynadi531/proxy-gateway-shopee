@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    init: true
+    working_dir: /app
+    env_file:
+      - ${GATEWAY_ENV_FILE:-.env}
+    environment:
+      HTTP_ADDRESS: :8080
+      DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway?sslmode=disable
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    volumes:
+      - .:/app
+      - go_build_cache:/root/.cache/go-build
+      - air_tmp:/app/tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+volumes:
+  go_build_cache:
+  air_tmp:

@@ -1,68 +1,150 @@
-# pg-shopee
+# Shopee QRIS gateway
 
-Go Fiber v3 starter with Clean Architecture and a sample user API.
+A Go Fiber v3 API around [PayGateMe](https://github.com/hirotomasato/paygateme), with GORM-backed PostgreSQL payment tracking and signed website webhooks. The running API replaces the starter user endpoints with transaction endpoints. The old user example remains in the source but is not registered by `cmd/api`.
 
 ## Run
 
-Use Go 1.27.3 or newer, matching `go.mod` and `go.work`.
+Requires Go 1.27.3 and PostgreSQL. For a local database:
 
 ```sh
-go mod download
+docker compose up -d postgres
+cp .env.example .env
+```
+
+Edit `.env`: set independent random `API_KEY` and `WEBHOOK_SECRET` values (at least 32 characters each), your merchant/store IDs, and your website's exact webhook origin. Generate secrets with `openssl rand -hex 32`. The compose database credentials are for local development; use your deployed database credentials and TLS configuration in production.
+
+Manually place a PayGateMe Shopee session in `session.json` and the matching store's **static QRIS payload string** in `qris.txt`. Configure different paths with `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE`. Keep these files private (`chmod 600 session.json qris.txt`); both are ignored by Git. `SHOPEE_MERCHANT_ID` must match `session.merchant.id`; `SHOPEE_STORE_ID` must match `session.storeId`. The operator must ensure the static QRIS belongs to that store.
+
+```sh
+set -a
+source .env
+set +a
 go run ./cmd/api
 ```
 
-The server listens on `:8080`. Set `HTTP_ADDRESS` and `SHUTDOWN_TIMEOUT`
-in the process environment to override defaults. `.env.example` documents
-these values; `.env` files are not loaded automatically.
+Environment files are not loaded automatically. The PostgreSQL adapter uses GORM models, queries, upserts, and transactions. The existing SQL schema is applied through GORM on startup under a database lock to preserve its constraints and partial indexes; it does not use AutoMigrate. PostgreSQL-specific allocation queries and advisory locks also run through GORM. An unavailable database or invalid static QRIS stops startup. A missing, invalid, or expired session leaves the API running with degraded login status. New payments are accepted only after a successful complete Shopee feed scan. No login or OTP endpoint is exposed.
+
+Replace `session.json` atomically when logging in again; the gateway reloads it without a restart. The gateway does not refresh or overwrite the injected session. Merchant/store configuration and QRIS changes require a restart. Use one configured merchant/store per deployment. API requests should reach the service over HTTPS through your reverse proxy.
+
+## Docker development with hot reload
+
+The development setup follows [backend-template-go](https://github.com/Reynadi531/backend-template-go)'s Air image, source bind mount, and Make commands. Prepare `.env`, `qris.txt`, and your session as described above, then run:
 
 ```sh
-HTTP_ADDRESS=:3000 SHUTDOWN_TIMEOUT=5s go run ./cmd/api
+make docker.dev.build
 ```
 
-## Structure
+This starts the API and PostgreSQL together. The API is available at `http://localhost:8080`; set `API_PORT=8081` to use another host port. The container overrides `DATABASE_URL` to reach the `postgres` service and listens on `:8080`. Other application settings come from `.env`. Set `GATEWAY_ENV_FILE` to use another environment file.
 
-```text
-cmd/api/                 Composition root: configuration and dependency wiring
-internal/domain/         Entities and business validation; standard library only
-internal/usecase/        Application operations and repository interface
-internal/adapter/http/  Fiber routes, request/response types, error mapping
-internal/adapter/memory/ Concurrent in-memory repository
-internal/config/         Environment configuration
+Air rebuilds and restarts the API when Go source, embedded SQL, or Go module/workspace files change. Build failures stop the previous API process and appear in the container logs. Reloads send SIGINT and allow up to 20 seconds for shutdown. Build output and Go compilation caches use Docker volumes; PostgreSQL uses the existing `gateway_data` volume. Session JSON changes are handled by the gateway itself without an Air rebuild.
+
+```sh
+make docker.dev        # Start using the existing development image
+make docker.dev.down   # Stop containers; retain database and cache volumes
 ```
 
-Dependencies point inward: adapters depend on use cases and domain; domain
-and use cases do not import Fiber or a database driver. The composition root
-injects the repository and ID generator into the service. To add a database,
-implement `usecase.UserRepository` in another adapter and change the wiring
-in `cmd/api/main.go`.
+Run `make docker.dev.build` after changing the Dockerfile or Air version. After editing `.env`, rerun `make docker.dev` to recreate the API container with the new environment. With Docker Desktop, if filesystem notifications do not propagate, add `poll = true` under `[build]` in `.air.toml` and restart the API container. This setup is for local development; the repository bind mount exposes local session files to the API container.
 
-The user API is a working example. Storage resets on restart, and each server
-process has its own data. Authentication, persistent storage, and Shopee
-integration are not included.
+## API
 
-## Endpoints
+Interactive Swagger documentation is available at `http://localhost:8080/swagger/` (or your configured API port). Click **Authorize**, enter your `API_KEY`, then use **Try it out** to call the protected endpoints. The UI and its assets are served locally by the API; no CDN or separate documentation container is required. API keys are held in page memory and are not persisted across reloads.
 
-| Method | Path | Response |
+The OpenAPI 3.0 specification is available at `/swagger/openapi.json`, with its source in `docs/openapi.json`. It documents authentication, request and response schemas, errors, login states, and signed webhook callbacks. The docs are public; API operations still require the API key. Documentation files are embedded in the Go binary, and Air rebuilds the API when they change.
+
+All `/api/v1` endpoints require `X-API-Key`. `GET /healthz` is public process liveness; it does not assert database or Shopee health.
+
+| Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/healthz` | Process liveness |
-| POST | `/api/v1/users` | Create a user; returns 201 and a Location header |
-| GET | `/api/v1/users` | List users (empty list is `[]`) |
-| GET | `/api/v1/users/:id` | Get a user or return 404 |
+| POST | `/api/v1/transactions` | Create or retrieve an idempotent payment |
+| GET | `/api/v1/transactions/:transaction_id` | Retrieve its persisted state |
+| GET | `/api/v1/shopee/status` | Inspect login and feed health |
 
 ```sh
-curl http://localhost:8080/healthz
-curl -i http://localhost:8080/api/v1/users \
+curl http://localhost:8080/api/v1/transactions \
+  -H "X-API-Key: $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Ada","email":"ada@example.com"}'
-curl http://localhost:8080/api/v1/users
+  -d '{"transaction_id":"order-123","amount":50000,"webhook_url":"https://your-website.example/payments/webhook"}'
 ```
 
-Names are trimmed; emails are trimmed, lowercased, validated, and unique.
-Errors use `{"error":"message"}` with 400 for invalid input, 404 for a missing
-user, and 409 for a duplicate email. Unexpected errors are logged and return
-a generic 500 response. Responses include an `X-Request-ID` header.
+`amount` is an integer in whole IDR, between 1 and 999999999. `transaction_id` is a nonempty string of at most 128 bytes, with no control characters or surrounding whitespace. It is globally unique in this database. `webhook_url` must use an origin listed in `WEBHOOK_ALLOWED_ORIGINS` (comma separated, exact scheme/host/port, no trailing slash). The allowlist is operator controlled: configure only website origins you trust. HTTPS is recommended; explicitly allowlisted HTTP origins are supported for local integration.
 
-SIGINT and SIGTERM trigger graceful shutdown with the configured timeout.
+Example response (`201` on creation, `200` on an identical retry):
+
+```json
+{
+  "transaction": {
+    "transaction_id": "order-123",
+    "amount": 50000,
+    "unique_code": 1,
+    "total_amount": 50001,
+    "qris": "<dynamic EMVCo QRIS payload encoding 50001 IDR>",
+    "status": "pending",
+    "created_at": "2026-11-10T10:00:00Z",
+    "expires_at": "2026-11-10T10:15:00Z",
+    "updated_at": "2026-11-10T10:00:00Z"
+  },
+  "login_state": {
+    "authenticated": true,
+    "state": "ready",
+    "last_checked_at": "2026-11-10T09:59:59Z",
+    "last_successful_at": "2026-11-10T09:59:59Z"
+  }
+}
+```
+
+The QRIS field is text to render as a QR code on your website. Pay exactly `total_amount`; `unique_code` is added to the requested amount. Codes range from 1 through 999. Database locking prevents overlapping payable amounts, including collisions between different base amounts and across API instances. Pending payments reserve their amounts; finalized payments reserve them until two minutes after their deadline. Exhaustion returns `409`.
+
+Repeating an ID with a different amount or webhook URL returns `409`. A retry with the original details retrieves the payment even if Shopee is unavailable. Invalid requests return `400`, missing IDs `404`, invalid/missing API keys `401`, and unavailable sessions `503`. Unknown server errors return a generic `500`; request IDs are included in response headers. GET and POST transaction responses include `login_state`.
+
+`authenticated` reflects local session credential validity, including known API rejection. Only `state: "ready"` also indicates a recent successful complete feed scan. Other states include `unverified`, `session_missing`, `session_invalid`, `scope_mismatch`, `session_expired_or_invalid`, `auth_required`, `unreachable`, `scan_incomplete`, and `stale`. The timestamps show the last provider check and last successful scan; local validity alone does not guarantee Shopee will accept the session.
+
+## Settlement and webhooks
+
+The worker polls Shopee every `POLL_INTERVAL` (default `5s`). Payments default to a `15m` deadline configured by `PAYMENT_EXPIRY`. It matches only Shopee `completed` transactions with the exact payable amount, configured merchant/store scope, and a provider timestamp within the payment window. Shopee timestamps have second precision. Provider transaction IDs can settle only one payment. Failed, unknown, or missing statuses never settle a payment.
+
+A matching payment becomes `paid`. An unmatched payment becomes `expired` after its deadline plus a two minute feed delay allowance, following a successful complete scan. During a provider outage or truncated scan, it remains pending. `expired` means no matching successful payment was found, rather than a failed individual payment attempt. Payments made after the deadline are stored in the merchant feed table but do not settle that order. The generated QRIS itself cannot enforce expiry at the payment provider.
+
+The database holds:
+
+- `gateway_transactions`: API payment requests, amounts, QRIS, deadlines and status.
+- `gateway_merchant_transactions`: normalized feed entries and their raw Shopee payloads, including unmatched transactions.
+- `gateway_scan`: durable scan checkpoints.
+- `gateway_webhooks`: final status events, delivery attempts, errors and delivery timestamps.
+
+The first scan imports the previous 24 hours. Later scans resume from the durable checkpoint with a two minute overlap and also cover the oldest pending payment, including after a restart or outage. This collects transactions exposed by the SDK feed for the configured store, not the account's entire historical ledger. `SHOPEE_MAX_PAGES` defaults to 100. If the feed is truncated, increase that limit; the gateway holds the checkpoint and does not expire payments until the scan completes. Transactions reported later than the overlap after an order is finalized need operator reconciliation.
+
+Each final state creates its webhook event in the same database transaction. A worker POSTs an event such as:
+
+```json
+{
+  "event_id": "<stable UUID>",
+  "type": "transaction.paid",
+  "transaction": {
+    "transaction_id": "order-123",
+    "amount": 50000,
+    "unique_code": 1,
+    "total_amount": 50001,
+    "qris": "<dynamic QRIS payload>",
+    "status": "paid",
+    "provider_transaction_id": "<Shopee transaction ID>",
+    "created_at": "2026-11-10T10:00:00Z",
+    "expires_at": "2026-11-10T10:15:00Z",
+    "updated_at": "2026-11-10T10:00:05Z"
+  }
+}
+```
+
+An unsuccessful payment window sends `type: "transaction.expired"` and `status: "expired"`. Pending events are not sent. Webhook headers:
+
+| Header | Value |
+| --- | --- |
+| `X-Webhook-ID` | Stable event UUID |
+| `X-Webhook-Timestamp` | Unix timestamp in seconds, refreshed per attempt |
+| `X-Webhook-Signature` | `sha256=<hex HMAC-SHA256>` |
+
+Verify the signature with `WEBHOOK_SECRET` over **timestamp + `.` + the exact raw HTTP body bytes**, using a constant time comparison. Reject stale timestamps (for example, outside five minutes) and deduplicate by event ID. Do not reserialize JSON before verifying. The API key is never sent to the webhook.
+
+Return any `2xx` after persisting the event. Non-2xx responses, timeouts, and transport errors retry indefinitely with exponential backoff capped at 2560 seconds. Delivery uses a one minute database lease and a ten second request timeout; redirects are not followed. Retries survive restart. Delivery is at least once: a crash after website acceptance can produce another attempt with the same event ID. Changing the signing secret requires coordinating the receiving website; removing an allowed origin blocks outstanding deliveries to that origin.
 
 ## Checks
 
@@ -72,5 +154,11 @@ make vet
 make build
 ```
 
-Fiber API references: [routing and testing](https://docs.gofiber.io/api/app/),
-[binding](https://docs.gofiber.io/api/bind/).
+PostgreSQL integration tests are enabled with `TEST_DATABASE_URL`. Use a disposable database, separate from your real gateway data:
+
+```sh
+TEST_DATABASE_URL='postgres://gateway:gateway@localhost:5432/gateway_test?sslmode=disable' \
+  go test -race ./...
+```
+
+Tests cover concurrent allocation, idempotency, persistence across repository instances, matching and expiration, outbox leasing/retries, API authentication/validation, and webhook signatures/redirect refusal. Live Shopee settlement requires your actual session, matching static QRIS, and a real payment.

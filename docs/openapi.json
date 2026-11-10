@@ -1,0 +1,197 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Shopee QRIS Gateway API",
+    "version": "1.0.0",
+    "description": "Create QRIS payments with unique amounts, track their status, and receive signed webhook events. Amounts are whole Indonesian rupiah (IDR). API requests require X-API-Key. Manually injected Shopee sessions are managed by the operator; no login or OTP endpoints are exposed."
+  },
+  "servers": [{"url": "/", "description": "This gateway"}],
+  "security": [{"ApiKeyAuth": []}],
+  "tags": [
+    {"name": "Transactions", "description": "Persisted QRIS payment requests and settlement status."},
+    {"name": "Shopee", "description": "Local credential validity and recent provider feed health."},
+    {"name": "Health", "description": "Process liveness."}
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getHealth",
+        "summary": "Check process liveness",
+        "description": "A successful response does not assert PostgreSQL connectivity or Shopee session health.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The API process is running.",
+            "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestID"}},
+            "content": {"application/json": {"schema": {"type": "object", "required": ["status"], "properties": {"status": {"type": "string", "enum": ["ok"]}}}}}
+          }
+        }
+      }
+    },
+    "/api/v1/transactions": {
+      "post": {
+        "tags": ["Transactions"],
+        "operationId": "createTransaction",
+        "summary": "Create a QRIS payment",
+        "description": "Adds a unique code from 1 through 999 to the requested amount. Pay exactly total_amount using the returned QRIS payload. Payable amounts are reserved in PostgreSQL across API instances, including collisions between different base amounts. Repeating the same transaction_id with identical amount and webhook_url returns the existing payment, including during a Shopee outage. Changing those details or merchant scope returns 409. New payments require a recent complete Shopee feed scan (login_state.state = ready). The default payment window is 15 minutes. Expiration is finalized after a two minute feed delay allowance and a successful complete scan; provider outages or incomplete scans leave payments pending. The QRIS itself does not enforce this deadline at Shopee.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateTransaction"},
+              "example": {"transaction_id": "order-123", "amount": 50000, "webhook_url": "https://your-website.example/payments/webhook"}
+            }
+          }
+        },
+        "responses": {
+          "201": {"$ref": "#/components/responses/TransactionCreated"},
+          "200": {"$ref": "#/components/responses/TransactionFound"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "413": {"$ref": "#/components/responses/BodyTooLarge"},
+          "500": {"$ref": "#/components/responses/InternalError"},
+          "503": {"$ref": "#/components/responses/SessionUnavailable"}
+        },
+        "callbacks": {
+          "transactionStatus": {
+            "{$request.body#/webhook_url}": {
+              "post": {
+                "summary": "Receive a final transaction status",
+                "description": "The gateway sends transaction.paid or transaction.expired, with at least once delivery. Deduplicate by event_id. Verify X-Webhook-Signature as sha256=<hex HMAC-SHA256> using WEBHOOK_SECRET over X-Webhook-Timestamp + '.' + the exact raw request body bytes. Use a constant time comparison and reject stale timestamps (for example, older than five minutes). The timestamp and signature refresh on each attempt; event_id stays stable. The API key is never sent. Return 2xx after persisting the event. Non-2xx responses, timeouts, and transport failures retry indefinitely with exponential backoff capped at 2560 seconds. Redirects are not followed.",
+                "security": [],
+                "parameters": [
+                  {"name": "X-Webhook-ID", "in": "header", "required": true, "description": "Stable event UUID, also included as event_id in the body.", "schema": {"type": "string", "format": "uuid"}},
+                  {"name": "X-Webhook-Timestamp", "in": "header", "required": true, "description": "Unix timestamp in seconds for this delivery attempt.", "schema": {"type": "string", "pattern": "^[0-9]+$"}},
+                  {"name": "X-Webhook-Signature", "in": "header", "required": true, "description": "HMAC-SHA256 signature of timestamp + '.' + raw body.", "schema": {"type": "string", "pattern": "^sha256=[0-9a-f]{64}$"}}
+                ],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebhookEvent"}}}},
+                "responses": {"2XX": {"description": "The website persisted the event. Any 2xx response acknowledges delivery."}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/transactions/{id}": {
+      "get": {
+        "tags": ["Transactions"],
+        "operationId": "getTransaction",
+        "summary": "Get a persisted payment",
+        "description": "Returns the original transaction_id and payment details together with current login health. This endpoint reads the database and does not make a live Shopee request.",
+        "parameters": [{"name": "id", "in": "path", "required": true, "description": "The transaction_id supplied when creating the payment.", "schema": {"type": "string"}, "example": "order-123"}],
+        "responses": {
+          "200": {"$ref": "#/components/responses/TransactionFound"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/api/v1/shopee/status": {
+      "get": {
+        "tags": ["Shopee"],
+        "operationId": "getShopeeStatus",
+        "summary": "Check Shopee login and feed health",
+        "description": "Reads the injected session locally and reports the last background feed check. authenticated alone does not guarantee provider acceptance. Only state=ready indicates a recent successful complete feed scan. This endpoint returns 200 even when the session is missing, expired, or degraded.",
+        "responses": {
+          "200": {
+            "description": "Current local login validity and feed state.",
+            "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestID"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginState"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key", "description": "Enter the gateway API_KEY. Swagger UI keeps it in memory for this page; it is not embedded in the docs or saved across reloads."}
+    },
+    "headers": {
+      "RequestID": {"description": "Request identifier for correlating gateway logs.", "schema": {"type": "string"}}
+    },
+    "schemas": {
+      "CreateTransaction": {
+        "type": "object",
+        "required": ["transaction_id", "amount", "webhook_url"],
+        "properties": {
+          "transaction_id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Globally unique client transaction ID. Maximum 128 UTF-8 bytes; no control characters or surrounding whitespace.", "example": "order-123"},
+          "amount": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 999999999, "description": "Base transaction amount in whole IDR, before the unique code is added.", "example": 50000},
+          "webhook_url": {"type": "string", "format": "uri", "description": "HTTP(S) URL whose exact scheme, host, and port are listed in WEBHOOK_ALLOWED_ORIGINS. No embedded credentials or fragment. HTTPS is recommended.", "example": "https://your-website.example/payments/webhook"}
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "required": ["transaction_id", "amount", "unique_code", "total_amount", "qris", "status", "created_at", "expires_at", "updated_at"],
+        "properties": {
+          "transaction_id": {"type": "string", "example": "order-123"},
+          "amount": {"type": "integer", "format": "int64", "example": 50000},
+          "unique_code": {"type": "integer", "format": "int64", "minimum": 1, "maximum": 999, "example": 1},
+          "total_amount": {"type": "integer", "format": "int64", "description": "amount + unique_code. The buyer must pay this exact whole IDR amount.", "example": 50001},
+          "qris": {"type": "string", "description": "Dynamic EMVCo QRIS payload encoding total_amount. Render it as a QR code on your website."},
+          "status": {"type": "string", "enum": ["pending", "paid", "expired"], "description": "paid requires a completed Shopee transaction matching the amount and time window. expired means no matching successful payment was found after the deadline and feed delay allowance; it does not identify a failed individual payment attempt."},
+          "provider_transaction_id": {"type": "string", "description": "Shopee transaction ID, present only for a matched paid payment."},
+          "created_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "LoginState": {
+        "type": "object",
+        "required": ["authenticated", "state", "last_checked_at", "last_successful_at"],
+        "properties": {
+          "authenticated": {"type": "boolean", "description": "Local session credential validity, accounting for known provider authentication rejection."},
+          "state": {"type": "string", "enum": ["ready", "unverified", "session_missing", "session_invalid", "scope_mismatch", "session_expired_or_invalid", "auth_required", "unreachable", "scan_incomplete", "stale"], "example": "ready"},
+          "last_checked_at": {"type": "string", "format": "date-time", "nullable": true, "description": "Last completed background provider request. Null before a check or after session replacement."},
+          "last_successful_at": {"type": "string", "format": "date-time", "nullable": true, "description": "Last successful provider request, which may have been truncated. Use state=ready to require a complete scan. Null before success or after session replacement."}
+        }
+      },
+      "TransactionResponse": {
+        "type": "object",
+        "required": ["transaction", "login_state"],
+        "properties": {"transaction": {"$ref": "#/components/schemas/Transaction"}, "login_state": {"$ref": "#/components/schemas/LoginState"}}
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error", "login_state"],
+        "properties": {"error": {"type": "string"}, "login_state": {"$ref": "#/components/schemas/LoginState"}}
+      },
+      "UnauthorizedError": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {"error": {"type": "string", "enum": ["invalid API key"]}}
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "required": ["event_id", "type", "transaction"],
+        "properties": {
+          "event_id": {"type": "string", "format": "uuid", "description": "Stable across retries. Use this value to deduplicate deliveries."},
+          "type": {"type": "string", "enum": ["transaction.paid", "transaction.expired"]},
+          "transaction": {"$ref": "#/components/schemas/Transaction"}
+        }
+      }
+    },
+    "responses": {
+      "TransactionCreated": {
+        "description": "A new payment was persisted and its amount reserved.",
+        "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestID"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TransactionResponse"}}}
+      },
+      "TransactionFound": {
+        "description": "The persisted payment, including an identical creation retry.",
+        "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestID"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TransactionResponse"}}}
+      },
+      "BadRequest": {"description": "Malformed JSON or invalid transaction fields.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "X-API-Key is missing or invalid. Login health is not included.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnauthorizedError"}}}},
+      "NotFound": {"description": "The requested transaction does not exist.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "The transaction ID exists with different details, or all 999 candidate payable amounts are reserved.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "BodyTooLarge": {"description": "The request exceeds the 16384 byte body limit.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "InternalError": {"description": "Unexpected server error. Details are logged; the response uses a generic message.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "SessionUnavailable": {"description": "Shopee login/feed health is not ready for a new payment.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    }
+  }
+}
