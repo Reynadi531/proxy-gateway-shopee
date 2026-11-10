@@ -45,6 +45,31 @@ make docker.dev.down   # Stop containers; retain database and cache volumes
 
 Run `make docker.dev.build` after changing the Dockerfile or Air version. After editing `.env`, rerun `make docker.dev` to recreate the API container with the new environment. With Docker Desktop, if filesystem notifications do not propagate, add `poll = true` under `[build]` in `.air.toml` and restart the API container. This setup is for local development; the repository bind mount exposes local session files to the API container.
 
+## Container image
+
+Build the production image locally:
+
+```sh
+docker build -t proxy-gateway-shopee .
+```
+
+The image contains a static Go binary on distroless Debian 13 and runs as UID/GID `65532:65532`. Pass configuration with `--env-file` and mount the session and QRIS files at the configured paths. For example, with both files in a dedicated `secrets` directory:
+
+```sh
+docker run --rm --name shopee-gateway \
+  --env-file .env \
+  -e HTTP_ADDRESS=:8080 \
+  -e SHOPEE_SESSION_FILE=/run/secrets/session.json \
+  -e SHOPEE_QRIS_FILE=/run/secrets/qris.txt \
+  --mount type=bind,src="$(pwd)/secrets",dst=/run/secrets,readonly \
+  -p 127.0.0.1:8080:8080 \
+  proxy-gateway-shopee
+```
+
+Use a `DATABASE_URL` reachable from the container; `localhost` refers to the container itself. Grant UID `65532` read access to the mounted files and traversal access to their directory, while keeping them private. Mounting the directory allows atomic session replacement on the host to remain visible in the container. Secrets are excluded from the build context by `.dockerignore`.
+
+The `Publish container image` GitHub Actions workflow builds Linux AMD64 and ARM64 images and pushes them to `ghcr.io/reynadi531/proxy-gateway-shopee`. Pushes to `main` publish `latest`, `main`, and a short commit SHA tag. Tags matching `v*` publish that version tag and a short commit SHA tag. The workflow also supports manual runs and authenticates with the built-in `GITHUB_TOKEN` using `packages: write`; no separate registry secret is needed.
+
 ## API
 
 Interactive Swagger documentation is available at `http://localhost:8080/swagger/` (or your configured API port). Click **Authorize**, enter your `API_KEY`, then use **Try it out** to call the protected endpoints. The UI and its assets are served locally by the API; no CDN or separate documentation container is required. API keys are held in page memory and are not persisted across reloads.
