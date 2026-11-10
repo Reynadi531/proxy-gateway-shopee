@@ -34,7 +34,7 @@
         "tags": ["Transactions"],
         "operationId": "createTransaction",
         "summary": "Create a QRIS payment",
-        "description": "Adds a unique code from 1 through 999 to the requested amount. Pay exactly total_amount using the returned QRIS payload. Payable amounts are reserved in PostgreSQL across API instances, including collisions between different base amounts. Repeating the same transaction_id with identical amount and webhook_url returns the existing payment, including during a Shopee outage. Changing those details or merchant scope returns 409. New payments require a recent complete Shopee feed scan (login_state.state = ready). The default payment window is 15 minutes. Expiration is finalized after a two minute feed delay allowance and a successful complete scan; provider outages or incomplete scans leave payments pending. The QRIS itself does not enforce this deadline at Shopee.",
+        "description": "Adds a unique code from the inclusive UNIQUE_CODE_MIN through UNIQUE_CODE_MAX environment range (defaults 1 through 999) to the requested amount. Pay exactly total_amount using the returned QRIS payload. Payable amounts are reserved in PostgreSQL across API instances, including collisions between different base amounts. Repeating the same transaction_id with identical amount and webhook_url returns the existing payment, including during a Shopee outage. Changing those details or merchant scope returns 409. New payments require a recent complete Shopee feed scan (login_state.state = ready). The default payment window is 15 minutes. Expiration is finalized after a two minute feed delay allowance and a successful complete scan; provider outages or incomplete scans leave payments pending. The QRIS itself does not enforce this deadline at Shopee.",
         "requestBody": {
           "required": true,
           "content": {
@@ -188,7 +188,7 @@
       "BadRequest": {"description": "Malformed JSON or invalid transaction fields.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "Unauthorized": {"description": "X-API-Key is missing or invalid. Login health is not included.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnauthorizedError"}}}},
       "NotFound": {"description": "The requested transaction does not exist.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-      "Conflict": {"description": "The transaction ID exists with different details, or all 999 candidate payable amounts are reserved.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "The transaction ID exists with different details, or all candidate payable amounts in the configured unique code range are reserved.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "BodyTooLarge": {"description": "The request exceeds the 16384 byte body limit.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "InternalError": {"description": "Unexpected server error. Details are logged; the response uses a generic message.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "SessionUnavailable": {"description": "Shopee login/feed health is not ready for a new payment.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}

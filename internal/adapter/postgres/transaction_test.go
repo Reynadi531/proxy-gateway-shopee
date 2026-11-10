@@ -129,6 +129,36 @@ func TestPostgresAllocationAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestPostgresConfiguredUniqueCodeRange(t *testing.T) {
+	r := repository(t)
+	r.UniqueCodeMin, r.UniqueCodeMax = 100, 101
+	ctx := context.Background()
+	scope := uuid.NewString()
+	cleanupScope(t, r, scope)
+	first := input(scope, uuid.NewString(), 10000)
+	for i, in := range []domain.Transaction{first, input(scope, uuid.NewString(), 10000)} {
+		got, created, err := r.Create(ctx, in, qr)
+		if err != nil || !created || got.UniqueCode != int64(100+i) || got.TotalAmount != in.Amount+got.UniqueCode {
+			t.Fatalf("allocation %d: %+v created=%v err=%v", i, got, created, err)
+		}
+	}
+	if _, _, err := r.Create(ctx, input(scope, uuid.NewString(), 10000), qr); !errors.Is(err, domain.ErrAmountUnavailable) {
+		t.Fatalf("expected range exhaustion, got %v", err)
+	}
+	r.UniqueCodeMin, r.UniqueCodeMax = 101, 101
+	got, created, err := r.Create(ctx, first, qr)
+	if err != nil || created || got.UniqueCode != 100 {
+		t.Fatalf("retry after range change: %+v created=%v err=%v", got, created, err)
+	}
+	if _, _, err := r.Create(ctx, input(scope, uuid.NewString(), 9999), qr); !errors.Is(err, domain.ErrAmountUnavailable) {
+		t.Fatalf("expected collision with code outside current range, got %v", err)
+	}
+	got, created, err = r.Create(ctx, input(scope, uuid.NewString(), 20000), qr)
+	if err != nil || !created || got.UniqueCode != 101 {
+		t.Fatalf("single-code range: %+v created=%v err=%v", got, created, err)
+	}
+}
+
 func TestReconcileRestartOutboxAndReplay(t *testing.T) {
 	r := repository(t)
 	ctx := context.Background()

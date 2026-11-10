@@ -50,6 +50,8 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	defer repo.Close()
+	repo.UniqueCodeMin = cfg.UniqueCodeMin
+	repo.UniqueCodeMax = cfg.UniqueCodeMax
 	service := &usecase.TransactionService{Repository: repo, Gateway: gateway, Scope: "shopee:" + cfg.MerchantID + ":" + cfg.StoreID, Expiry: cfg.Expiry, AllowedOrigins: cfg.AllowedOrigins}
 	workers, cancelWorkers := context.WithCancel(ctx)
 	var wg sync.WaitGroup

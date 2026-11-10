@@ -23,8 +23,10 @@ import (
 var schema string
 
 type Repository struct {
-	DB    *gorm.DB
-	sqlDB *sql.DB
+	DB            *gorm.DB
+	sqlDB         *sql.DB
+	UniqueCodeMin int64
+	UniqueCodeMax int64
 }
 
 func Open(ctx context.Context, dsn string) (*Repository, error) {
@@ -38,7 +40,7 @@ func Open(ctx context.Context, dsn string) (*Repository, error) {
 	}
 	sqlDB.SetMaxOpenConns(20)
 	sqlDB.SetMaxIdleConns(5)
-	r := &Repository{DB: db, sqlDB: sqlDB}
+	r := &Repository{DB: db, sqlDB: sqlDB, UniqueCodeMin: 1, UniqueCodeMax: 999}
 	if err = sqlDB.PingContext(ctx); err != nil {
 		sqlDB.Close()
 		return nil, err
@@ -98,9 +100,9 @@ func (r *Repository) Create(ctx context.Context, t domain.Transaction, build fun
 		if !errors.Is(err, domain.ErrTransactionNotFound) {
 			return err
 		}
-		err = tx.Raw(`SELECT code FROM generate_series(1,999) AS code WHERE NOT EXISTS (
+		err = tx.Raw(`SELECT code FROM generate_series(?::bigint,?::bigint) AS code WHERE NOT EXISTS (
    SELECT 1 FROM gateway_transactions WHERE scope=? AND total_amount=?+code
-   AND (status='pending' OR expires_at >= ?::timestamptz - interval '2 minutes')) ORDER BY code LIMIT 1`, t.Scope, t.Amount, t.CreatedAt).Row().Scan(&t.UniqueCode)
+   AND (status='pending' OR expires_at >= ?::timestamptz - interval '2 minutes')) ORDER BY code LIMIT 1`, r.UniqueCodeMin, r.UniqueCodeMax, t.Scope, t.Amount, t.CreatedAt).Row().Scan(&t.UniqueCode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrAmountUnavailable
 		}
