@@ -102,7 +102,7 @@ func (r *Repository) Create(ctx context.Context, t domain.Transaction, build fun
 		}
 		err = tx.Raw(`SELECT code FROM generate_series(?::bigint,?::bigint) AS code WHERE NOT EXISTS (
    SELECT 1 FROM gateway_transactions WHERE scope=? AND total_amount=?+code
-   AND (status='pending' OR expires_at >= ?::timestamptz - interval '2 minutes')) ORDER BY code LIMIT 1`, r.UniqueCodeMin, r.UniqueCodeMax, t.Scope, t.Amount, t.CreatedAt).Row().Scan(&t.UniqueCode)
+   AND (status='pending' OR (status='expired' AND expires_at >= ?::timestamptz - interval '2 minutes'))) ORDER BY code LIMIT 1`, r.UniqueCodeMin, r.UniqueCodeMax, t.Scope, t.Amount, t.CreatedAt).Row().Scan(&t.UniqueCode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrAmountUnavailable
 		}

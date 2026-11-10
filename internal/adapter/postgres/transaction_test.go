@@ -159,6 +159,52 @@ func TestPostgresConfiguredUniqueCodeRange(t *testing.T) {
 	}
 }
 
+func TestPostgresPaidUniqueCodeReuse(t *testing.T) {
+	r := repository(t)
+	r.UniqueCodeMin, r.UniqueCodeMax = 100, 100
+	ctx := context.Background()
+	scope := uuid.NewString()
+	cleanupScope(t, r, scope)
+	first := input(scope, uuid.NewString(), 10000)
+	p, _, err := r.Create(ctx, first, qr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Create(ctx, input(scope, uuid.NewString(), 10000), qr); !errors.Is(err, domain.ErrAmountUnavailable) {
+		t.Fatalf("pending payment did not reserve code: %v", err)
+	}
+	feed := []domain.MerchantTransaction{{ID: uuid.NewString(), Amount: p.TotalAmount, Status: "completed", Time: first.CreatedAt, Raw: []byte(`{}`)}}
+	if err := r.Reconcile(ctx, scope, feed, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	paid, created, err := r.Create(ctx, first, qr)
+	if err != nil || created || paid.Status != "paid" || paid.ProviderID != feed[0].ID {
+		t.Fatalf("paid retry: %+v created=%v err=%v", paid, created, err)
+	}
+	next, created, err := r.Create(ctx, input(scope, uuid.NewString(), 10000), qr)
+	if err != nil || !created || next.UniqueCode != p.UniqueCode || next.TotalAmount != p.TotalAmount {
+		t.Fatalf("paid code reuse: %+v created=%v err=%v", next, created, err)
+	}
+	if _, _, err := r.Create(ctx, input(scope, uuid.NewString(), 10000), qr); !errors.Is(err, domain.ErrAmountUnavailable) {
+		t.Fatalf("reused code was not reserved: %v", err)
+	}
+	if err := r.Reconcile(ctx, scope, feed, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Get(ctx, next.ID)
+	if err != nil || got.Status != "pending" || got.ProviderID != "" {
+		t.Fatalf("old payment settled reused code: %+v err=%v", got, err)
+	}
+	feed = append(feed, domain.MerchantTransaction{ID: uuid.NewString(), Amount: next.TotalAmount, Status: "completed", Time: next.CreatedAt, Raw: []byte(`{}`)})
+	if err := r.Reconcile(ctx, scope, feed, time.Now().UTC(), true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = r.Get(ctx, next.ID)
+	if err != nil || got.Status != "paid" || got.ProviderID != feed[1].ID {
+		t.Fatalf("new payment settlement: %+v err=%v", got, err)
+	}
+}
+
 func TestReconcileRestartOutboxAndReplay(t *testing.T) {
 	r := repository(t)
 	ctx := context.Background()
