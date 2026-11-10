@@ -3,6 +3,7 @@ package http_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -25,6 +26,35 @@ func (g *testGateway) LoginState() domain.LoginState { return g.state }
 func (*testGateway) QRIS(n int64) (string, error)    { return "dynamic-qris", nil }
 func (*testGateway) Scan(context.Context, time.Time, time.Time) ([]domain.MerchantTransaction, bool, error) {
 	return nil, true, nil
+}
+
+type failingTransactionRepository struct {
+	usecase.TransactionRepository
+}
+
+func (failingTransactionRepository) Get(context.Context, string) (domain.Transaction, error) {
+	return domain.Transaction{}, errors.New("database password=secret")
+}
+
+func TestInternalErrorsAreRedacted(t *testing.T) {
+	service := &usecase.TransactionService{Repository: failingTransactionRepository{}, Gateway: &testGateway{}}
+	app := httpadapter.NewGatewayServer(service, "test-api-key", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest("GET", "/api/v1/transactions/order-123", nil)
+	req.Header.Set("X-API-Key", "test-api-key")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 500 || body.Error != "internal server error" {
+		t.Fatalf("unexpected error: status=%d error=%q", resp.StatusCode, body.Error)
+	}
 }
 
 func TestTransactionHTTP(t *testing.T) {

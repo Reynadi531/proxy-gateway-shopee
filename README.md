@@ -1,6 +1,6 @@
 # Shopee QRIS gateway
 
-A Go Fiber v3 API around [PayGateMe](https://github.com/hirotomasato/paygateme), with GORM-backed PostgreSQL payment tracking and signed website webhooks. The running API replaces the starter user endpoints with transaction endpoints. The old user example remains in the source but is not registered by `cmd/api`.
+A Go Fiber v3 API around [PayGateMe](https://github.com/hirotomasato/paygateme), with GORM-backed PostgreSQL payment tracking and signed website webhooks.
 
 ## Run
 
