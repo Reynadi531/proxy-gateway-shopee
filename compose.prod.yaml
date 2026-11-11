@@ -1,0 +1,46 @@
+name: shopee-gateway
+
+services:
+  api:
+    image: ghcr.io/reynadi531/proxy-gateway-shopee:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - ${GATEWAY_ENV_FILE:-.env}
+    environment:
+      HTTP_ADDRESS: :8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-gateway}?sslmode=disable
+      SHOPEE_SESSION_FILE: /run/secrets/session.json
+      SHOPEE_QRIS_FILE: /run/secrets/qris.txt
+    volumes:
+      - type: bind
+        source: ${SECRETS_DIR:-./secrets}
+        target: /run/secrets
+        read_only: true
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gateway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-gateway}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

@@ -68,6 +68,20 @@ docker run --rm --name shopee-gateway \
 
 Use a `DATABASE_URL` reachable from the container; `localhost` refers to the container itself. Grant UID `65532` read access to the mounted files and traversal access to their directory, while keeping them private. Mounting the directory allows atomic session replacement on the host to remain visible in the container. Secrets are excluded from the build context by `.dockerignore`.
 
+### Production compose
+
+`compose.prod.yaml` runs the published GHCR image with its own PostgreSQL. Put `session.json` and `qris.txt` in `./secrets` (override with `SECRETS_DIR`); the directory is bind-mounted read-only at `/run/secrets`, and the compose file points `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE` there. Set `POSTGRES_PASSWORD` in `.env`; compose builds `DATABASE_URL` from it.
+
+```sh
+mkdir -p secrets && cp session.json qris.txt secrets/
+sudo chown -R 65532:65532 secrets && chmod 700 secrets && chmod 600 secrets/*
+make docker.prod        # docker compose -f compose.prod.yaml up -d
+make docker.prod.pull   # pull a newer image, then rerun make docker.prod
+make docker.prod.down   # stop; database volume retained
+```
+
+`IMAGE_TAG` selects the image tag (default `latest`). The API binds to `127.0.0.1:8080` by default; change with `API_BIND` and `API_PORT`, or put a reverse proxy in front. The compose project is named `shopee-gateway`, so it does not touch the development containers or volume.
+
 The `Publish container image` GitHub Actions workflow builds Linux AMD64 and ARM64 images and pushes them to `ghcr.io/reynadi531/proxy-gateway-shopee`. Pushes to `main` publish `latest`, `main`, and a short commit SHA tag. Tags matching `v*` publish that version tag and a short commit SHA tag. The workflow also supports manual runs and authenticates with the built-in `GITHUB_TOKEN` using `packages: write`; no separate registry secret is needed.
 
 ## API
