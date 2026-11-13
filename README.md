@@ -13,7 +13,7 @@ cp .env.example .env
 
 Edit `.env`: set independent random `API_KEY` and `WEBHOOK_SECRET` values (at least 32 characters each), your merchant/store IDs, and your website's exact webhook origin. Generate secrets with `openssl rand -hex 32`. The compose database credentials are for local development; use your deployed database credentials and TLS configuration in production.
 
-Manually place a PayGateMe Shopee session in `session.json` and the matching store's **static QRIS payload string** in `qris.txt`. Configure different paths with `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE`. Keep these files private (`chmod 600 session.json qris.txt`); both are ignored by Git. `SHOPEE_MERCHANT_ID` must match `session.merchant.id`; `SHOPEE_STORE_ID` must match `session.storeId`. The operator must ensure the static QRIS belongs to that store.
+Place a PayGateMe Shopee session in `session.json` (or create one with the [Telegram bot](#telegram-session-bot)) and the matching store's **static QRIS payload string** in `qris.txt`. Configure different paths with `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE`. Keep these files private (`chmod 600 session.json qris.txt`); both are ignored by Git. `SHOPEE_MERCHANT_ID` must match `session.merchant.id`; `SHOPEE_STORE_ID` must match `session.storeId`. The operator must ensure the static QRIS belongs to that store.
 
 ```sh
 set -a
@@ -22,9 +22,47 @@ set +a
 go run ./cmd/api
 ```
 
-Environment files are not loaded automatically. The PostgreSQL adapter uses GORM models, queries, upserts, and transactions. The existing SQL schema is applied through GORM on startup under a database lock to preserve its constraints and partial indexes; it does not use AutoMigrate. PostgreSQL-specific allocation queries and advisory locks also run through GORM. An unavailable database or invalid static QRIS stops startup. A missing, invalid, or expired session leaves the API running with degraded login status. New payments are accepted only after a successful complete Shopee feed scan. No login or OTP endpoint is exposed.
+Environment files are not loaded automatically. The PostgreSQL adapter uses GORM models, queries, upserts, and transactions. The existing SQL schema is applied through GORM on startup under a database lock to preserve its constraints and partial indexes; it does not use AutoMigrate. PostgreSQL-specific allocation queries and advisory locks also run through GORM. An unavailable database or invalid static QRIS stops startup. A missing, invalid, or expired session leaves the API running with degraded login status. New payments are accepted only after a successful complete Shopee feed scan. The HTTP API exposes no login or OTP endpoint; logins go through the optional Telegram bot.
 
-Replace `session.json` atomically when logging in again; the gateway reloads it without a restart. The gateway does not refresh or overwrite the injected session. Merchant/store configuration and QRIS changes require a restart. Use one configured merchant/store per deployment. API requests should reach the service over HTTPS through your reverse proxy.
+Replace `session.json` atomically when logging in again; the gateway reloads it without a restart. Without the Telegram bot, the gateway never refreshes or overwrites the session. Merchant/store configuration and QRIS changes require a restart. Use one configured merchant/store per deployment. API requests should reach the service over HTTPS through your reverse proxy.
+
+## Telegram session bot
+
+Shopee's merchant token cookie lasts about 24 hours. The optional Telegram bot keeps the session alive and runs the OTP login from chat when it cannot. It runs inside the API process and is enabled by setting `TELEGRAM_BOT_TOKEN`.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Send `/start` to your bot from each admin account. The bot replies to unknown users with their Telegram user ID.
+3. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ADMIN_IDS` (comma-separated user IDs), then restart the API.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | unset | Enables the bot |
+| `TELEGRAM_ADMIN_IDS` | required with the token | Telegram user IDs allowed to use the bot; alerts go to each one |
+| `SHOPEE_LOGIN_PHONE` | unset | Use this phone number during `/login` instead of asking |
+| `SHOPEE_LOGIN_PASSWORD` | unset | Use this account password during `/login` instead of asking |
+| `SESSION_REFRESH_BEFORE` | `2h` | Renew the token this long before it expires (1m to 23h) |
+| `SESSION_CHECK_INTERVAL` | `1m` | How often the session is checked (10s to 1h) |
+
+Commands, accepted only in private chats with an admin:
+
+| Command | Action |
+| --- | --- |
+| `/status` | Gateway login state, merchant, store, token expiry, and whether renewal without OTP is possible |
+| `/login` | Ask for the phone number and password (unless configured), request a Shopee OTP, then wait for the code |
+| `/skip` | Continue `/login` for an account without a password |
+| `/refresh` | Renew the token now without an OTP |
+| `/cancel` | Abort the login in progress |
+
+Session handling:
+
+- When the token is within `SESSION_REFRESH_BEFORE` of expiry, or Shopee rejects it, the bot renews it without an OTP while Shopee still recognizes the account login. Renewals are attempted at most every 10 minutes and are announced silently.
+- If renewal is impossible (Shopee ended the account login, the session has no renewal credential, or the file is missing, invalid, or for another merchant/store), the bot alerts every admin and repeats the alert hourly until the session works again. Reply `/login` to log in with an OTP.
+- Transient renewal failures are retried quietly while the current token still works, and alert once it has expired.
+- `/login` uses `SHOPEE_MERCHANT_ID` and `SHOPEE_STORE_ID`; a login that cannot reach them is rejected. The OTP is valid for 10 minutes and allows 5 attempts.
+- The bot deletes messages containing the phone number, password, and OTP after reading them. Telegram bot chats are not end-to-end encrypted; set `SHOPEE_LOGIN_PASSWORD` instead if you would rather not send the password through Telegram.
+- Messages older than five minutes, for example queued while the API was down, are ignored.
+
+The bot writes the session file atomically (temporary file, `fsync`, rename) with mode `0600`, so the API needs write access to the session file's directory. Renewal results are discarded if the file changed during the renewal. After a new session is written, the gateway reports `unverified` until its next feed scan (within `POLL_INTERVAL`) and returns `503` for new payments in the meantime. Only one API instance should run the bot for a given bot token, since Telegram delivers updates to a single poller.
 
 ## Docker development with hot reload
 
@@ -70,7 +108,7 @@ Use a `DATABASE_URL` reachable from the container; `localhost` refers to the con
 
 ### Production compose
 
-`compose.prod.yaml` runs the published GHCR image with its own PostgreSQL. Put `session.json` and `qris.txt` in `./secrets` (override with `SECRETS_DIR`); the directory is bind-mounted read-only at `/run/secrets`, and the compose file points `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE` there. Set `POSTGRES_PASSWORD` in `.env`; compose builds `DATABASE_URL` from it.
+`compose.prod.yaml` runs the published GHCR image with its own PostgreSQL. Put `session.json` and `qris.txt` in `./secrets` (override with `SECRETS_DIR`); the directory is bind-mounted at `/run/secrets` (writable so the Telegram bot can replace the session; set `read_only: true` on the mount if you do not use the bot), and the compose file points `SHOPEE_SESSION_FILE` and `SHOPEE_QRIS_FILE` there. Set `POSTGRES_PASSWORD` in `.env`; compose builds `DATABASE_URL` from it.
 
 ```sh
 mkdir -p secrets && cp session.json qris.txt secrets/

@@ -16,10 +16,11 @@ services:
       SHOPEE_SESSION_FILE: /run/secrets/session.json
       SHOPEE_QRIS_FILE: /run/secrets/qris.txt
     volumes:
+      # Writable so the Telegram bot can replace session.json atomically.
       - type: bind
         source: ${SECRETS_DIR:-./secrets}
         target: /run/secrets
-        read_only: true
+        read_only: false
     ports:
       - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8080"
     depends_on:

@@ -14,6 +14,7 @@ import (
 	httpadapter "pg-shopee/internal/adapter/http"
 	"pg-shopee/internal/adapter/postgres"
 	"pg-shopee/internal/adapter/shopee"
+	"pg-shopee/internal/adapter/telegram"
 	"pg-shopee/internal/adapter/webhook"
 	"pg-shopee/internal/config"
 	"pg-shopee/internal/usecase"
@@ -57,6 +58,12 @@ func run(log *slog.Logger) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { service.RunPoller(workers, cfg.PollInterval, log) })
 	wg.Go(func() { service.RunWebhooks(workers, webhook.New(cfg.WebhookSecret, cfg.AllowedOrigins), log) })
+	if tg := cfg.Telegram; tg.Enabled() {
+		sessions := shopee.NewSessionManager(cfg.SessionFile, cfg.MerchantID, cfg.StoreID)
+		bot := telegram.New(telegram.NewClient(tg.BotToken, ""), sessions, gateway, telegram.Config{Admins: tg.AdminIDs, Phone: tg.Phone, Password: tg.Password, RefreshBefore: tg.RefreshBefore, CheckInterval: tg.CheckInterval}, log.With("component", "telegram"))
+		wg.Go(func() { bot.Run(workers) })
+		log.Info("telegram session bot enabled", "admins", len(tg.AdminIDs))
+	}
 	defer func() { cancelWorkers(); wg.Wait() }()
 	app := httpadapter.NewGatewayServer(service, cfg.APIKey, log)
 	log.Info("starting server", "address", cfg.HTTPAddress)

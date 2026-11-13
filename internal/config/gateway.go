@@ -24,6 +24,7 @@ type GatewayConfig struct {
 	UniqueCodeMin  int64
 	UniqueCodeMax  int64
 	AllowedOrigins map[string]bool
+	Telegram       TelegramConfig
 }
 
 func LoadGateway() (GatewayConfig, error) {
@@ -97,6 +98,9 @@ func LoadGateway() (GatewayConfig, error) {
 	}
 	if len(c.AllowedOrigins) == 0 {
 		return c, fmt.Errorf("WEBHOOK_ALLOWED_ORIGINS is required")
+	}
+	if c.Telegram, err = LoadTelegram(); err != nil {
+		return c, err
 	}
 	return c, nil
 }
