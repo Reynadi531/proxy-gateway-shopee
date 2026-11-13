@@ -99,12 +99,12 @@ docker run --rm --name shopee-gateway \
   -e HTTP_ADDRESS=:8080 \
   -e SHOPEE_SESSION_FILE=/run/secrets/session.json \
   -e SHOPEE_QRIS_FILE=/run/secrets/qris.txt \
-  --mount type=bind,src="$(pwd)/secrets",dst=/run/secrets,readonly \
+  --mount type=bind,src="$(pwd)/secrets",dst=/run/secrets \
   -p 127.0.0.1:8080:8080 \
   proxy-gateway-shopee
 ```
 
-Use a `DATABASE_URL` reachable from the container; `localhost` refers to the container itself. Grant UID `65532` read access to the mounted files and traversal access to their directory, while keeping them private. Mounting the directory allows atomic session replacement on the host to remain visible in the container. Secrets are excluded from the build context by `.dockerignore`.
+Use a `DATABASE_URL` reachable from the container; `localhost` refers to the container itself. Grant UID `65532` read access to the mounted files and traversal access to their directory, while keeping them private. With the Telegram bot enabled, UID `65532` also needs write access to the directory (for example `chown 65532:65532 secrets && chmod 700 secrets`); without the bot, add `,readonly` to the mount. Mounting the directory allows atomic session replacement on the host to remain visible in the container. Secrets are excluded from the build context by `.dockerignore`.
 
 ### Production compose
 
